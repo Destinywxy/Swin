@@ -1,0 +1,20 @@
+
+AMP_ENABLE: False
+DISCRETE_MODEL:
+  TYPE: continuous_vit
+  NAME: continuous_vit_small
+  DROP_PATH_RATE: 0.2
+  EMBED_DIM: 32
+  N_EMBED: 8192
+  
+
+DATA:
+  IMG_SIZE: 256
+  BATCH_SIZE: 128
+
+#TRAIN: # follow this code https://github.com/pytorch/examples/tree/main/imagenet
+#  BASE_LR: 
+#  WEIGHT_DECAY:
+#  OPTIMIZER:
+#    NAME: SGD
+#    MOMENTUM: 
