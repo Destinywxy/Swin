@@ -3,7 +3,7 @@ import torch
 import clip
 from tqdm import tqdm
 
-class_name_file = '/home/wxy/phd/Swin/Swin/classname.txt'
+class_name_file = './classname.txt'
 # with open(class_name_file, 'r') as file:
 #     imagenet_classes = [line.strip() for line in file.readlines()]
 
