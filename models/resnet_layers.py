@@ -187,7 +187,7 @@ class ResEncoder(ResNet):
     
 
 class ResDecoder(ResNet):
-    def __init__(self, block, dec_layers, clip_feature=1024, bn=BatchNorm):
+    def __init__(self, block, dec_layers, clip_feature=1000, bn=BatchNorm):
         super(ResDecoder, self).__init__()
         self.inplanes = 512
         self.layer3 = self._make_layer(block, 256, dec_layers[0], stride=2, bn=bn)
@@ -202,9 +202,9 @@ class ResDecoder(ResNet):
         x = self.layer4(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        feature = self.fc(x)
+        res = self.fc(x)
 
-        return x
+        return res
 
     def chw(self, x):
         x = self.layer3(x)
