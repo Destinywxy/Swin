@@ -22,7 +22,7 @@ class DiscreteModel(nn.Module):
                                          remap=None, sane_index_shape=False)
             self.pre_quant = torch.nn.Conv2d(z_channels, embed_dim, 1)# Encoder最后会映射到z_channels
             self.post_quant = torch.nn.Conv2d(embed_dim, z_channels, 1)
-            self.attnpool = AttentionPool2d(self.spacial_dim, z_channels, self.heads, self.output_dim)
+            # self.attnpool = AttentionPool2d(self.spacial_dim, z_channels, self.heads, self.output_dim)
         elif type == "vit":
             self.quantizer = VectorQuantizer(embed_dim, n_embed)
             self.pre_quant = nn.Linear(z_channels, embed_dim)
@@ -51,6 +51,13 @@ class DiscreteModel(nn.Module):
         quant = self.post_quant(quant)
         feature = self.attnpool(quant)
         return feature, emb_loss
+    
+    def chw(self, input):
+        quant, diff, _ = self.encode(input)
+        quant = self.post_quant(quant)
+        output = self.decoder.chw(quant)
+        return output, diff
+
     
 def build_encoder(config, is_pretrain=False):
     # 暂时只考虑encoder decoder 同构

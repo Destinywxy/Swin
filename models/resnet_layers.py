@@ -204,7 +204,12 @@ class ResDecoder(ResNet):
         x = x.view(x.size(0), -1)
         feature = self.fc(x)
 
-        return feature
+        return x
+
+    def chw(self, x):
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return x
 
 
 class ResDecoder_clip(ResNet):

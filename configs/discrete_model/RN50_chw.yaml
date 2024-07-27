@@ -1,0 +1,18 @@
+
+AMP_ENABLE: False
+DISCRETE_MODEL:
+  TYPE: resnet
+  NAME: resnet50_codewords1024_dim256_clip
+  DROP_PATH_RATE: 0.2
+  RESNET:
+    Z_CHANNELS: 512
+
+DATA:
+  IMG_SIZE: 224
+
+#TRAIN: # follow this code https://github.com/pytorch/examples/tree/main/imagenet
+#  BASE_LR: 
+#  WEIGHT_DECAY:
+#  OPTIMIZER:
+#    NAME: SGD
+#    MOMENTUM: 
