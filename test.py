@@ -101,7 +101,7 @@ def main(config):
     model = build_dicrete_model(config)
     logger.info(str(model))
     model.cuda()
-    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False, find_unused_parameters=True)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False, find_unused_parameters=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model_clip, preprocess = clip.load('RN50', device)
     
@@ -110,26 +110,28 @@ def main(config):
     for idx, (images, target) in enumerate(data_loader_val):
         images = images.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
-        print(target.size)
+        print(target.size())
         
          # compute output
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            midputs, _ = model.chw(images) # [bs,2048,7,7]
+            midputs, _ = model.module.chw(images) # [bs,2048,7,7]
             output, quant_loss = model(images)    # [bs,1000]
         acc1_cls, acc5_cls = accuracy(output, target, topk=(1, 5)) # [bs,1000]
-        print(midputs.size)
-        print(output.size)
+        print(midputs.size())
+        print(output.size())
 
         output_clip = model_clip.attenpool(midputs.half()) # [1,1024]
-        print(output_clip.size)
+        print(output_clip.size())
         output_clip /= output_clip.norm(dim=-1, keepdim=True) # [1,1024]
         similarity = (100.0 * output_clip.float() @ text_features.float())
         acc1_zeroshot, acc5_zeroshot = accuracy(similarity, target, topk=(1, 5)) # [bs,1000]
         with torch.no_grad():
             image_features_clip_ori = model_clip.encode_image_chw(images) # [2048,7,7]
 
-        loss_cls = torch.nn.MSELoss(output, target)
-        loss_zeroshot = torch.nn.MSELoss(midputs, image_features_clip_ori)
+        loss_func = torch.nn.CrossEntropyLoss()
+        loss_cls = loss_func(output, target)
+        loss_func1 = torch.nn.MSELoss()
+        loss_zeroshot = loss_func1(midputs, image_features_clip_ori)
 
 
 if __name__ == '__main__':

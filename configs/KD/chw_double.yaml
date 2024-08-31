@@ -1,0 +1,10 @@
+AMP_ENABLE: False
+DISCRETE_MODEL:
+  TYPE: resnet
+  NAME: RN50_KD_chw_double
+  DROP_PATH_RATE: 0.2
+  RESNET:
+    Z_CHANNELS: 512
+
+DATA:
+  IMG_SIZE: 224

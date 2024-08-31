@@ -56,7 +56,6 @@ class AttentionPool2d(nn.Module):
 
 
 
-
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
@@ -187,7 +186,7 @@ class ResEncoder(ResNet):
     
 
 class ResDecoder(ResNet):
-    def __init__(self, block, dec_layers, clip_feature=1000, bn=BatchNorm):
+    def __init__(self, block, dec_layers, clip_feature=1024, bn=BatchNorm):
         super(ResDecoder, self).__init__()
         self.inplanes = 512
         self.layer3 = self._make_layer(block, 256, dec_layers[0], stride=2, bn=bn)

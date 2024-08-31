@@ -123,19 +123,18 @@ def main(config):
     else:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
-    if config.AUG.MIXUP > 0.:
+    # if config.AUG.MIXUP > 0.:
         # smoothing is handled with mixup label transform
-        cls_criterion = SoftTargetCrossEntropy()
-    elif config.DISCRETE_MODEL.LABEL_SMOOTHING > 0.:
-        cls_criterion = LabelSmoothingCrossEntropy(smoothing=config.DISCRETE_MODEL.LABEL_SMOOTHING)
-    else:
-        cls_criterion = torch.nn.CrossEntropyLoss()
+    #     cls_criterion = SoftTargetCrossEntropy()
+    # elif config.DISCRETE_MODEL.LABEL_SMOOTHING > 0.:
+    #     cls_criterion = LabelSmoothingCrossEntropy(smoothing=config.DISCRETE_MODEL.LABEL_SMOOTHING)
+    # else:
+    #     cls_criterion = torch.nn.CrossEntropyLoss()
     clip_criterion = torch.nn.MSELoss()
 
     text_features = zeroshot(model_clip)
 
-    max_accuracy_cls = 0.0
-    max_accuracy_zeroshot = 0.0
+    max_accuracy = 0.0
 
     #if config.TRAIN.AUTO_RESUME:
     #    resume_file = auto_resume_helper(config.OUTPUT)
@@ -151,15 +150,15 @@ def main(config):
 
     if config.DISCRETE_MODEL.RESUME:
         max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
-        acc1_cls, acc5_cls, loss_cls, acc1_zeroshot, acc5_zeroshot, loss_zershot= validate(config, data_loader_val, model, model_clip, cls_criterion, clip_criterion, text_features)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1_cls:.1f}%")
+        acc1, acc5, loss = validate(config, data_loader_val, model)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
         if config.EVAL_MODE:
             return
 
     if config.DISCRETE_MODEL.PRETRAINED and (not config.DISCRETE_MODEL.RESUME):
         load_pretrained(config, model_without_ddp, logger)
-        acc1_cls, acc5_cls, loss_cls, acc1_zeroshot, acc5_zeroshot, loss_zershot= validate(config, data_loader_val, model, model_clip, cls_criterion, clip_criterion, text_features)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1_cls:.1f}%")
+        acc1, acc5, loss = validate(config, data_loader_val, model)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
 
     if config.THROUGHPUT_MODE:
         throughput(data_loader_val, model, logger)
@@ -171,23 +170,18 @@ def main(config):
     for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
         data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
+        train_one_epoch(config, model, model_clip, clip_criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
                         loss_scaler, tf_writer)
         if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
             save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
                             logger)
 
-        acc1_cls, acc5_cls, loss_cls, acc1_zeroshot, acc5_zeroshot, loss_zershot= validate(config, data_loader_val, model, model_clip, cls_criterion, clip_criterion, text_features)
-        logger.info(f"CLS Accuracy of the network on the {len(dataset_val)} test images: {acc1_cls:.3f}% / Top5 Acc {acc5_cls:.3f}%")
-        logger.info(f"Zeroshot Accuracy of the network on the {len(dataset_val)} test images: {acc1_zeroshot:.3f}% / Top5 Acc {acc5_zeroshot:.3f}%")
-        max_accuracy_cls = max(max_accuracy_cls, acc1_cls)
-        logger.info(f'CLS Max accuracy: {max_accuracy_cls:.2f}%')
-        max_accuracy_zeroshot = max(max_accuracy_zeroshot, acc1_zeroshot)
-        logger.info(f'Zeroshot Max accuracy: {max_accuracy_zeroshot:.2f}%')
-        tf_writer.add_scalar('Acc_cls@1', acc1_cls, epoch)
-        tf_writer.add_scalar('Acc_cls@5', acc5_cls, epoch)
-        tf_writer.add_scalar('Acc_zeroshot@1', acc1_zeroshot, epoch)
-        tf_writer.add_scalar('Acc_zeroshot@5', acc5_zeroshot, epoch)
+        acc1, acc5, loss = validate(config, data_loader_val, model, model_clip, text_features)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.3f}% / Top5 Acc {acc5:.3f}%")
+        max_accuracy = max(max_accuracy, acc1)
+        logger.info(f'Max accuracy: {max_accuracy:.2f}%')
+        tf_writer.add_scalar('Acc@1', acc1, epoch)
+        tf_writer.add_scalar('Acc@5', acc5, epoch)
     #except:
     #    tf_writer.close()
 
@@ -198,7 +192,7 @@ def main(config):
     tf_writer.close()
 
 
-def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler, tf_writer):
+def train_one_epoch(config, model, model_clip, clip_criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler, tf_writer):
     model.train()
     optimizer.zero_grad()
     
@@ -209,8 +203,8 @@ def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, da
     num_steps = len(data_loader)
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
-    cls_loss_meter = AverageMeter()
-    clip_loss_meter = AverageMeter()
+    clip_loss_meter_1 = AverageMeter()
+    clip_loss_meter_2 = AverageMeter()
     quant_loss_meter = AverageMeter()
     norm_meter = AverageMeter()
     scaler_meter = AverageMeter()
@@ -223,17 +217,19 @@ def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, da
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            midputs, quant_loss = model.module.chw(samples) # [bs,2048,7,7]
-            outputs, _ = model(samples) # [bs,1000]
-        print(outputs.size())
+            midputs, quant_loss = model.module.chw(samples) # [2048,7,7]
+            outputs, _ = model(samples) # [bs,1024]
+        # print(outputs.size())
         with torch.no_grad():
-            image_features = model_clip.encode_image_chw(samples) # [bs,2048,7,7]
-        print(image_features.size())
+            image_features_chw = model_clip.encode_image_chw(samples) # [2048,7,7]
+            image_features_one = model_clip.encode_image(samples) # [bs,1024]
+        # print(image_features.size())
         
-        features = image_features.float() # [float32]
-        clip_loss = clip_criterion(midputs, features) # 蒸馏loss
-        cls_loss = cls_criterion(outputs, targets) # 分类loss
-        loss = config.LOSS.CLIP_WEIGHT * clip_loss + config.LOSS.QUANT_WEIGHT * quant_loss + config.LOSS.CLS_WEIGHT * cls_loss
+        features_chw = image_features_chw.float() # chw
+        features_one = image_features_one.float() # one
+        clip_loss_chw = clip_criterion(midputs, features_chw)
+        clip_loss_one = clip_criterion(outputs, features_one)
+        loss = config.LOSS.CLIP_WEIGHT * clip_loss_one + config.LOSS.CLIP_WEIGHT * clip_loss_chw + config.LOSS.QUANT_WEIGHT * quant_loss
 
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
@@ -247,8 +243,8 @@ def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, da
 
         torch.cuda.synchronize()
 
-        clip_loss_meter.update(clip_loss.item(), targets.size(0))
-        cls_loss_meter.update(cls_loss.item(), targets.size(0))
+        clip_loss_meter_1.update(clip_loss_one.item(), targets.size(0))
+        clip_loss_meter_2.update(clip_loss_chw.item(), targets.size(0))
         quant_loss_meter.update(quant_loss.item(), targets.size(0))
         loss_meter.update(loss.item(), targets.size(0))
         if grad_norm is not None:  # loss_scaler return None if not update
@@ -267,17 +263,17 @@ def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, da
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t wd {wd:.4f}\t'
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
-                f'clip loss {clip_loss_meter.val:.4f} ({clip_loss_meter.avg:.4f})\t'
-                f'cls loss {cls_loss_meter.val:.4f} ({cls_loss_meter.avg:.4f})\t'
-                f'quant loss {quant_loss_meter.val:.4f} ({quant_loss_meter.avg:.4f})\t'
+                f'clip_loss {clip_loss_meter_1.val:.4f} ({clip_loss_meter_1.avg:.4f})\t'
+                f'clip_loss_chw {clip_loss_meter_1.val:.4f} ({clip_loss_meter_1.avg:.4f})\t'
+                f'quant_loss {quant_loss_meter.val:.4f} ({quant_loss_meter.avg:.4f})\t'
                 f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
                 f'mem {memory_used:.0f}MB')
             
             tf_writer.add_scalar('Learning rate', lr, epoch * len(data_loader) + idx)
             tf_writer.add_scalar('Training loss', loss_meter.val, epoch * epoch * len(data_loader) + idx)
-            tf_writer.add_scalar('Clip loss', clip_loss.item(), epoch * epoch * len(data_loader) + idx)
-            tf_writer.add_scalar('Cls loss', cls_loss.item(), epoch * epoch * len(data_loader) + idx)
+            tf_writer.add_scalar('Clip loss', clip_loss_one.item(), epoch * epoch * len(data_loader) + idx)
+            tf_writer.add_scalar('chw Clip loss', clip_loss_chw.item(), epoch * epoch * len(data_loader) + idx)
             tf_writer.add_scalar('Quant loss', quant_loss.item(), epoch * epoch * len(data_loader) + idx)
 
     epoch_time = time.time() - start
@@ -285,10 +281,9 @@ def train_one_epoch(config, model, model_clip, cls_criterion, clip_criterion, da
 
 
 @torch.no_grad()
-def validate(config, data_loader, model, model_clip, cls_criterion, clip_criterion, text_features):
+def validate(config, data_loader, model, model_clip, text_features):
     
-    # clip_criterion = torch.nn.MSELoss()
-
+    clip_criterion = torch.nn.MSELoss()
     model.eval()
 
     # device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -296,12 +291,10 @@ def validate(config, data_loader, model, model_clip, cls_criterion, clip_criteri
     model_clip.eval()
 
     batch_time = AverageMeter()
-    loss_cls_meter = AverageMeter()
-    acc1_cls_meter = AverageMeter()
-    acc5_cls_meter = AverageMeter()
-    loss_zeroshot_meter = AverageMeter()
-    acc1_zeroshot_meter = AverageMeter()
-    acc5_zeroshot_meter = AverageMeter()
+    loss_ori_meter = AverageMeter()
+    loss_ys_meter = AverageMeter()
+    acc1_meter = AverageMeter()
+    acc5_meter = AverageMeter()
 
     end = time.time()
     for idx, (images, target) in enumerate(data_loader):
@@ -310,33 +303,30 @@ def validate(config, data_loader, model, model_clip, cls_criterion, clip_criteri
 
         # compute output
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            midputs, _ = model.module.chw(images) # [bs,2048,7,7]
-            output, quant_loss = model(images)    # [bs,1000]
-        acc1_cls, acc5_cls = accuracy(output, target, topk=(1, 5)) # [bs,1000]
-
-        output_clip = model_clip.attenpool(midputs.half()) # [1,1024]
-        output_clip /= output_clip.norm(dim=-1, keepdim=True) # [1,1024]
-        similarity = (100.0 * output_clip.float() @ text_features.float())
-        acc1_zeroshot, acc5_zeroshot = accuracy(similarity, target, topk=(1, 5)) # [bs,1000]
+            midput, quant_loss = model.module.chw(images)  # [2048,7,7]
+            output, _ = model(images) # [bs,1024]
+        # output = model_clip.attenpool(midput) # [1,1024]
+        output /= output.norm(dim=-1, keepdim=True) # [1,1024]
         with torch.no_grad():
             image_features_clip_ori = model_clip.encode_image_chw(images) # [2048,7,7]
+            image_features_clip = model_clip.encode_image(images) # [1,1024]
+        image_features_clip /= image_features_clip.norm(dim=-1, keepdim=True)
 
-        loss_cls = clip_criterion(output, target)
-        loss_zeroshot = clip_criterion(midputs, image_features_clip_ori)
+        similarity = (100.0 * output.float() @ text_features.float())
+        acc1, acc5 = accuracy(similarity, target, topk=(1, 5))
 
-        acc1_cls = reduce_tensor(acc1_cls)
-        acc5_cls = reduce_tensor(acc5_cls)
-        loss_cls = reduce_tensor(loss_cls)
-        acc1_zeroshot = reduce_tensor(acc1_zeroshot)
-        acc5_zeroshot = reduce_tensor(acc5_zeroshot)
-        loss_zeroshot = reduce_tensor(loss_zeroshot)
+        loss_ori = clip_criterion(midput, image_features_clip_ori) # 高维loss
+        loss_ys = clip_criterion(output, image_features_clip) # 压缩后的低维loss
 
-        loss_cls_meter.update(loss_cls.item(), target.size(0))
-        acc1_cls_meter.update(acc1_cls.item(), target.size(0))
-        acc5_cls_meter.update(acc5_cls.item(), target.size(0))
-        loss_zeroshot_meter.update(loss_zeroshot.item(), target.size(0))
-        acc1_zeroshot_meter.update(acc1_zeroshot.item(), target.size(0))
-        acc5_zeroshot_meter.update(acc5_zeroshot.item(), target.size(0))
+        acc1 = reduce_tensor(acc1)
+        acc5 = reduce_tensor(acc5)
+        loss_ori = reduce_tensor(loss_ori)
+        loss_ys = reduce_tensor(loss_ys)
+
+        loss_ori_meter.update(loss_ori.item(), target.size(0))
+        loss_ys_meter.update(loss_ys.item(), target.size(0))
+        acc1_meter.update(acc1.item(), target.size(0))
+        acc5_meter.update(acc5.item(), target.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -347,16 +337,13 @@ def validate(config, data_loader, model, model_clip, cls_criterion, clip_criteri
             logger.info(
                 f'Test: [{idx}/{len(data_loader)}]\t'
                 f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                f'Loss_cls {loss_cls_meter.val:.4f} ({loss_cls_meter.avg:.4f})\t'
-                f'Acc_cls@1 {acc1_cls_meter.val:.3f} ({acc1_cls_meter.avg:.3f})\t'
-                f'Acc_cls@5 {acc5_cls_meter.val:.3f} ({acc5_cls_meter.avg:.3f})\t'
-                f'Loss_zeroshot {loss_zeroshot_meter.val:.4f} ({loss_zeroshot_meter.avg:.4f})\t'
-                f'Acc_zershot@1 {acc1_zeroshot_meter.val:.3f} ({acc1_zeroshot_meter.avg:.3f})\t'
-                f'Acc_zershot@5 {acc5_zeroshot_meter.val:.3f} ({acc5_zeroshot_meter.avg:.3f})\t'
+                f'ori_Loss {loss_ori_meter.val:.4f} ({loss_ori_meter.avg:.4f})\t'
+                f'ys_Loss {loss_ys_meter.val:.4f} ({loss_ys_meter.avg:.4f})\t'
+                f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
+                f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t'
                 f'Mem {memory_used:.0f}MB')
-    logger.info(f' cls acc * Acc@1 {acc1_cls_meter.avg:.3f} Acc@5 {acc5_cls_meter.avg:.3f}')
-    logger.info(f' cls zeroshot * Acc@1 {acc1_zeroshot_meter.avg:.3f} Acc@5 {acc5_zeroshot_meter.avg:.3f}')
-    return acc1_cls_meter.avg, acc5_cls_meter.avg, loss_cls_meter.avg, acc1_zeroshot_meter.avg, acc5_zeroshot_meter.avg, loss_zeroshot_meter.avg,
+    logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
+    return acc1_meter.avg, acc5_meter.avg, loss_ys_meter.avg
 
 
 @torch.no_grad()
